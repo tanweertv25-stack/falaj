@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>نظام الفلج المتقدم</title>
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;600;700;800&display=swap" rel="stylesheet">
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            50: '#f0fdfa', 100: '#ccfbf1', 200: '#99f6e4',
+                            300: '#5eead4', 400: '#2dd4bf', 500: '#14b8a6',
+                            600: '#0d9488', 700: '#0f766e', 800: '#115e59', 900: '#134e4a',
+                        }
+                    },
+                    fontFamily: { cairo: ['Cairo', 'sans-serif'] },
+                    animation: {
+                        'pulse-slow': 'pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+                    }
+                }
+            }
+        }
+    </script>
+    
+    <!-- React & ReactDOM -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    <!-- Babel for JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <style>
+        body { font-family: 'Cairo', sans-serif; background-color: #f8fafc; color: #1e293b; }
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: #f1f5f9; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+        .glass-panel { background: rgba(255, 255, 255, 0.7); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border: 1px solid rgba(255, 255, 255, 0.3); }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo } = React;
+
+        function App() {
+            const [view, setView] = useState('public'); // 'public', 'my-schedule', 'admin'
+            const [records, setRecords] = useState(() => {
+                const saved = localStorage.getItem("falaj-records-v2");
+                if (saved) return JSON.parse(saved);
+                
+                // Migrate old data if exists
+                const oldSaved = localStorage.getItem("falaj-records");
+                if (oldSaved) {
+                    const parsed = JSON.parse(oldSaved);
+                    return parsed.map(r => ({...r, raddahName: r.raddahName || 'غير محدد'}));
+                }
+                return [];
+            });
+
+            const [form, setForm] = useState({
+                name: "", number: "", day: "", date: "", time: "", period: "نهار", raddahName: ""
+            });
+
+            const [now, setNow] = useState(new Date());
+            const [searchQuery, setSearchQuery] = useState("");
+            const [editingId, setEditingId] = useState(null);
+            
+            // For admin protection (Mock)
+            const [adminPass, setAdminPass] = useState("");
+            const [isAdminAuth, setIsAdminAuth] = useState(false);
+
+            useEffect(() => {
+                const timer = setInterval(() => setNow(new Date()), 1000);
+                return () => clearInterval(timer);
+            }, []);
+
+            useEffect(() => {
+                localStorage.setItem("falaj-records-v2", JSON.stringify(records));
+            }, [records]);
+
+            useEffect(() => { lucide.createIcons(); });
+
+            // Processing Records for live tracking
+            const processedRecords = useMemo(() => {
+                let sorted = [...records].map(r => {
+                    const dt = new Date(`${r.date}T${r.time}`);
+                    return { ...r, startDateTime: dt, startMs: dt.getTime() };
+                }).sort((a, b) => a.startMs - b.startMs);
+
+                // Assign end times based on the next person's start time
+                for(let i=0; i<sorted.length; i++) {
+                    if(i < sorted.length - 1) {
+                        sorted[i].endDateTime = sorted[i+1].startDateTime;
+                        sorted[i].endMs = sorted[i+1].startMs;
+                    } else {
+                        // Last record: assume it runs for 24 hours just as a placeholder if no next record exists
+                        const end = new Date(sorted[i].startMs + 24 * 60 * 60 * 1000);
+                        sorted[i].endDateTime = end;
+                        sorted[i].endMs = end.getTime();
+                    }
+                }
+                return sorted;
+            }, [records]);
+
+            const currentStatus = useMemo(() => {
+                const nowMs = now.getTime();
+                const current = processedRecords.find(r => nowMs >= r.startMs && nowMs < r.endMs);
+                const next = processedRecords.find(r => r.startMs > nowMs);
+                
+                let timeRemaining = null;
+                let isEndingSoon = false;
+
+                if (current) {
+                    const diffMs = current.endMs - nowMs;
+                    const hours = Math.floor(diffMs / (1000 * 60 * 60));
+                    const mins = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+                    const secs = Math.floor((diffMs % (1000 * 60)) / 1000);
+                    timeRemaining = { hours, mins, secs };
+                    isEndingSoon = diffMs < (15 * 60 * 1000); // Less than 15 mins
+                }
+
+                let nextTimeRemaining = null;
+                if (!current && next) {
+                    const diffMs = next.startMs - nowMs;
+                    const hours = Math.floor(diffMs / (1000 * 60 * 60));
+                    const mins = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+                    const secs = Math.floor((diffMs % (1000 * 60)) / 1000);
+                    nextTimeRemaining = { hours, mins, secs };
+                }
+
+                return { current, next, timeRemaining, isEndingSoon, nextTimeRemaining };
+            }, [now, processedRecords]);
+
+            // Form Handlers
+            const handleSave = () => {
+                if (!form.name || !form.number || !form.date || !form.time || !form.day || !form.raddahName) {
+                    alert("يرجى تعبئة جميع الحقول، بما فيها اسم الردة.");
+                    return;
+                }
+                if (editingId) {
+                    setRecords(records.map(r => r.id === editingId ? { ...form, id: editingId } : r));
+                } else {
+                    setRecords([...records, { ...form, id: Date.now() }]);
+                }
+                resetForm();
+            };
+
+            const handleDelete = (id) => {
+                if(window.confirm("هل أنت متأكد من حذف هذا السجل؟")) {
+                    setRecords(records.filter(r => r.id !== id));
+                }
+            };
+
+            const resetForm = () => {
+                setForm({ name: "", number: "", day: "", date: "", time: "", period: "نهار", raddahName: "" });
+                setEditingId(null);
+            };
+
+            const formatTime = (num) => num.toString().padStart(2, '0');
+
+            // View Renderers
+            const renderPublicDashboard = () => (
+                <div className="space-y-8 animate-fade-in">
+                    {/* Live Status Widget */}
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        {/* Current Person */}
+                        <div className={`relative overflow-hidden rounded-3xl p-6 md:p-8 text-white shadow-xl transition-all duration-500 ${
+                            currentStatus.current 
+                                ? currentStatus.isEndingSoon ? 'bg-gradient-to-br from-orange-500 to-red-600' : 'bg-gradient-to-br from-brand-500 to-brand-700' 
+                                : 'bg-gradient-to-br from-slate-400 to-slate-600'
+                        }`}>
+                            <div className="absolute top-0 right-0 opacity-10 transform translate-x-4 -translate-y-4">
+                                <i data-lucide="droplets" style={{width: 150, height: 150}}></i>
+                            </div>
+                            <div className="relative z-10">
+                                <div className="flex justify-between items-start">
+                                    <span className="bg-white/20 px-3 py-1 rounded-full text-sm font-semibold backdrop-blur-md">
+                                        الحالة الحالية
+                                    </span>
+                                    {currentStatus.isEndingSoon && (
+                                        <span className="flex items-center gap-1 bg-red-900/40 text-white px-3 py-1 rounded-full text-sm font-bold animate-pulse">
+                                            <i data-lucide="bell-ring" className="w-4 h-4"></i> يوشك على الانتهاء
+                                        </span>
+                                    )}
+                                </div>
+                                
+                                {currentStatus.current ? (
+                                    <div className="mt-6">
+                                        <h3 className="text-sm font-medium opacity-90 mb-1">الآن يسقي:</h3>
+                                        <h2 className="text-3xl md:text-5xl font-bold mb-4">{currentStatus.current.name}</h2>
+                                        
+                                        <div className="grid grid-cols-2 gap-4 mt-6">
+                                            <div className="bg-black/10 rounded-2xl p-4 backdrop-blur-md">
+                                                <p className="text-xs opacity-80 mb-1">الردة</p>
+                                                <p className="font-bold">{currentStatus.current.raddahName} ({currentStatus.current.period})</p>
+                                            </div>
+                                            <div className="bg-black/10 rounded-2xl p-4 backdrop-blur-md">
+                                                <p className="text-xs opacity-80 mb-1">الوقت المتبقي لانتهاء فلجه</p>
+                                                <div className="font-bold text-xl flex items-center gap-1" dir="ltr">
+                                                    {formatTime(currentStatus.timeRemaining.hours)}:{formatTime(currentStatus.timeRemaining.mins)}:<span className="text-brand-200">{formatTime(currentStatus.timeRemaining.secs)}</span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <div className="mt-6 py-8 text-center">
+                                        <i data-lucide="coffee" className="w-16 h-16 mx-auto mb-4 opacity-50"></i>
+                                        <h2 className="text-2xl font-bold">لا يوجد أحد يسقي الآن</h2>
+                                        {currentStatus.next && (
+                                            <p className="mt-2 opacity-80">يبدأ الفلج القادم بعد: {formatTime(currentStatus.nextTimeRemaining.hours)}:{formatTime(currentStatus.nextTimeRemaining.mins)}:{formatTime(currentStatus.nextTimeRemaining.secs)}</p>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+
+                        {/* Next Person */}
+                        <div className="bg-white rounded-3xl p-6 md:p-8 shadow-xl border border-slate-100 flex flex-col justify-between relative overflow-hidden">
+                            <div className="absolute top-0 left-0 w-2 h-full bg-indigo-500"></div>
+                            <div>
+                                <span className="bg-indigo-50 text-indigo-700 px-3 py-1 rounded-full text-sm font-bold flex items-center gap-2 w-max mb-6">
+                                    <i data-lucide="arrow-left-circle" className="w-4 h-4"></i> التالي في الجدول
+                                </span>
+                                
+                                {currentStatus.next ? (
+                                    <div>
+                                        <h2 className="text-2xl md:text-3xl font-bold text-slate-800 mb-2">{currentStatus.next.name}</h2>
+                                        <p className="text-slate-500 text-lg mb-6">ردة: <span className="font-bold text-slate-700">{currentStatus.next.raddahName}</span></p>
+                                        
+                                        <div className="space-y-3">
+                                            <div className="flex items-center gap-3 text-slate-600 bg-slate-50 p-3 rounded-xl">
+                                                <i data-lucide="calendar" className="text-indigo-500 w-5 h-5"></i>
+                                                <span>{currentStatus.next.day}، {currentStatus.next.date}</span>
+                                            </div>
+                                            <div className="flex items-center gap-3 text-slate-600 bg-slate-50 p-3 rounded-xl">
+                                                <i data-lucide="clock" className="text-indigo-500 w-5 h-5"></i>
+                                                <span>يبدأ الساعة: <strong dir="ltr">{currentStatus.next.time}</strong></span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <div className="py-12 text-center text-slate-400">
+                                        <i data-lucide="calendar-off" className="w-12 h-12 mx-auto mb-3 opacity-30"></i>
+                                        <p>لا توجد سجلات قادمة في الجدول</p>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* All Schedule List */}
+                    <div className="bg-white rounded-3xl p-6 shadow-sm border border-slate-200">
+                        <h3 className="text-xl font-bold text-slate-800 mb-6 flex items-center gap-2">
+                            <i data-lucide="list" className="text-brand-500"></i> الجدول الكامل القادم
+                        </h3>
+                        <div className="overflow-x-auto">
+                            <table className="w-full text-right border-collapse min-w-[600px]">
+                                <thead>
+                                    <tr className="bg-slate-50 text-slate-500 border-b border-slate-200">
+                                        <th className="p-4 font-semibold rounded-tr-xl">الاسم</th>
+                                        <th className="p-4 font-semibold">اسم الردة</th>
+                                        <th className="p-4 font-semibold">اليوم والتاريخ</th>
+                                        <th className="p-4 font-semibold">وقت البدء</th>
+                                        <th className="p-4 font-semibold rounded-tl-xl">الفترة</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {processedRecords.filter(r => r.startMs >= (currentStatus.current?.startMs || now.getTime())).map((r, i) => (
+                                        <tr key={r.id} className={`border-b border-slate-100 hover:bg-slate-50 transition-colors ${i===0 && currentStatus.current ? 'bg-brand-50/50' : ''}`}>
+                                            <td className="p-4 font-bold text-slate-800">
+                                                {r.name} 
+                                                {i===0 && currentStatus.current && <span className="mr-2 text-xs bg-brand-500 text-white px-2 py-0.5 rounded-full">الآن</span>}
+                                            </td>
+                                            <td className="p-4 text-slate-600">{r.raddahName}</td>
+                                            <td className="p-4 text-slate-600">{r.day}، {r.date}</td>
+                                            <td className="p-4 font-semibold text-slate-700" dir="ltr">{r.time}</td>
+                                            <td className="p-4">
+                                                <span className={`px-3 py-1 rounded-full text-xs font-bold ${r.period === 'نهار' ? 'bg-amber-100 text-amber-700' : 'bg-indigo-100 text-indigo-700'}`}>
+                                                    {r.period}
+                                                </span>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                    {processedRecords.length === 0 && (
+                                        <tr><td colSpan="5" className="p-8 text-center text-slate-400">الجدول فارغ</td></tr>
+                                    )}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            );
+
+            const renderMySchedule = () => {
+                const myRecords = processedRecords.filter(r => r.name.includes(searchQuery) || r.number.toString().includes(searchQuery));
+                return (
+                    <div className="bg-white rounded-3xl p-6 md:p-8 shadow-xl border border-slate-100 animate-fade-in max-w-4xl mx-auto">
+                        <div className="text-center mb-8">
+                            <div className="bg-brand-100 text-brand-600 w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4">
+                                <i data-lucide="user" className="w-8 h-8"></i>
+                            </div>
+                            <h2 className="text-3xl font-bold text-slate-800 mb-2">جدول سقيتي</h2>
+                            <p className="text-slate-500">ابحث باسمك أو برقمك التعريفي لرؤية مواعيدك القادمة والإشعارات</p>
+                        </div>
+                        
+                        <div className="relative max-w-xl mx-auto mb-10">
+                            <div className="absolute inset-y-0 right-0 flex items-center pr-4 pointer-events-none">
+                                <i data-lucide="search" className="text-slate-400 w-5 h-5"></i>
+                            </div>
+                            <input 
+                                type="text" 
+                                placeholder="أدخل اسمك أو رقمك..." 
+                                value={searchQuery}
+                                onChange={(e) => setSearchQuery(e.target.value)}
+                                className="w-full bg-slate-50 border-2 border-slate-200 text-lg text-slate-900 rounded-2xl pr-12 pl-4 py-4 focus:outline-none focus:border-brand-500 transition-all shadow-inner"
+                            />
+                        </div>
+
+                        {searchQuery && (
+                            <div className="space-y-4">
+                                {myRecords.length > 0 ? myRecords.map((r) => {
+                                    const isCurrent = currentStatus.current?.id === r.id;
+                                    const isNext = currentStatus.next?.id === r.id;
+                                    return (
+                                        <div key={r.id} className={`p-5 rounded-2xl border-2 transition-all ${isCurrent ? 'border-brand-500 bg-brand-50 shadow-md' : isNext ? 'border-indigo-400 bg-indigo-50 shadow-sm' : 'border-slate-100 bg-white hover:border-slate-300'}`}>
+                                            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                                                <div>
+                                                    <div className="flex items-center gap-3 mb-2">
+                                                        <h3 className="text-xl font-bold text-slate-800">{r.raddahName}</h3>
+                                                        {isCurrent && <span className="bg-brand-500 text-white text-xs px-2 py-1 rounded-full animate-pulse">دورك الآن!</span>}
+                                                        {isNext && <span className="bg-indigo-500 text-white text-xs px-2 py-1 rounded-full">أنت التالي</span>}
+                                                    </div>
+                                                    <p className="text-slate-600">التاريخ: {r.day}، {r.date}</p>
+                                                </div>
+                                                <div className="bg-white p-3 rounded-xl border border-slate-200 text-center md:text-right min-w-[150px]">
+                                                    <p className="text-xs text-slate-500 mb-1">يبدأ الساعة</p>
+                                                    <p className="text-xl font-bold text-brand-700" dir="ltr">{r.time}</p>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )
+                                }) : (
+                                    <div className="text-center py-12 text-slate-400">
+                                        <i data-lucide="search-x" className="w-12 h-12 mx-auto mb-4 opacity-50"></i>
+                                        <p className="text-lg">لم يتم العثور على أي جداول بهذا الاسم/الرقم.</p>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                    </div>
+                );
+            };
+
+            const renderAdminAuth = () => (
+                <div className="max-w-md mx-auto bg-white rounded-3xl p-8 shadow-xl text-center border border-slate-100 mt-10 animate-fade-in">
+                    <div className="bg-red-50 text-red-500 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
+                        <i data-lucide="lock" className="w-8 h-8"></i>
+                    </div>
+                    <h2 className="text-2xl font-bold text-slate-800 mb-2">تسجيل دخول الإدارة</h2>
+                    <p className="text-slate-500 mb-6">هذه الصفحة مخصصة لوكيل الفلج فقط.</p>
+                    <input 
+                        type="password" 
+                        placeholder="كلمة المرور" 
+                        value={adminPass}
+                        onChange={(e) => setAdminPass(e.target.value)}
+                        onKeyDown={(e) => { if(e.key === 'Enter' && adminPass === 'Asdf@#$1234') setIsAdminAuth(true); }}
+                        className="w-full bg-slate-50 border border-slate-300 text-slate-900 rounded-xl px-4 py-3 mb-4 focus:outline-none focus:border-brand-500 text-center"
+                    />
+                    <button 
+                        onClick={() => { if(adminPass === 'Asdf@#$1234') setIsAdminAuth(true); else alert('كلمة المرور خاطئة'); }}
+                        className="w-full bg-slate-800 text-white py-3 rounded-xl font-bold hover:bg-slate-700 transition-colors"
+                    >
+                        دخول
+                    </button>
+                </div>
+            );
+
+            const renderAdminDashboard = () => (
+                <div className="max-w-4xl mx-auto bg-white rounded-3xl p-6 md:p-8 shadow-xl border border-slate-100 animate-fade-in">
+                    <div className="flex justify-between items-center mb-8 border-b border-slate-100 pb-6">
+                        <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+                            <span className="bg-slate-100 p-2 rounded-xl text-slate-700">
+                                <i data-lucide="settings" className="w-6 h-6"></i>
+                            </span>
+                            لوحة التحكم وإدارة السجلات
+                        </h2>
+                        <button onClick={() => setIsAdminAuth(false)} className="text-sm text-red-500 hover:bg-red-50 px-3 py-1.5 rounded-lg transition-colors font-bold flex items-center gap-1">
+                            <i data-lucide="log-out" className="w-4 h-4"></i> تسجيل خروج
+                        </button>
+                    </div>
+
+                    <div className="bg-slate-50 p-6 rounded-2xl border border-slate-200 mb-8">
+                        <h3 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2">
+                            <i data-lucide={editingId ? 'edit-2' : 'plus-circle'} className="text-brand-600"></i>
+                            {editingId ? "تعديل السجل" : "إضافة ردة جديدة"}
+                        </h3>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                                <label className="block text-sm font-semibold text-slate-700 mb-1.5">الاسم</label>
+                                <input type="text" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="w-full p-2.5 bg-white border border-slate-300 rounded-lg focus:outline-none focus:border-brand-500" />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-semibold text-slate-700 mb-1.5">اسم الردة (النوع)</label>
+                                <input type="text" placeholder="مثال: ردة رئيسية، سقية الليل..." value={form.raddahName} onChange={(e) => setForm({ ...form, raddahName: e.target.value })} className="w-full p-2.5 bg-white border border-slate-300 rounded-lg focus:outline-none focus:border-brand-500" />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-semibold text-slate-700 mb-1.5">الرقم</label>
+                                <input type="number" value={form.number} onChange={(e) => setForm({ ...form, number: e.target.value })} className="w-full p-2.5 bg-white border border-slate-300 rounded-lg focus:outline-none focus:border-brand-500" />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-semibold text-slate-700 mb-1.5">اليوم</label>
+                                <select value={form.day} onChange={(e) => setForm({ ...form, day: e.target.value })} className="w-full p-2.5 bg-white border border-slate-300 rounded-lg focus:outline-none focus:border-brand-500">
+                                    <option value="" disabled>اختر</option>
+                                    {['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'].map(day => <option key={day} value={day}>{day}</option>)}
+                                </select>
+                            </div>
+                            <div>
+                                <label className="block text-sm font-semibold text-slate-700 mb-1.5">التاريخ</label>
+                                <input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} className="w-full p-2.5 bg-white border border-slate-300 rounded-lg focus:outline-none focus:border-brand-500" />
+                            </div>
+                            <div className="flex gap-2">
+                                <div className="flex-1">
+                                    <label className="block text-sm font-semibold text-slate-700 mb-1.5">وقت البدء</label>
+                                    <input type="time" value={form.time} onChange={(e) => setForm({ ...form, time: e.target.value })} className="w-full p-2.5 bg-white border border-slate-300 rounded-lg focus:outline-none focus:border-brand-500" />
+                                </div>
+                                <div className="w-1/3">
+                                    <label className="block text-sm font-semibold text-slate-700 mb-1.5">الفترة</label>
+                                    <select value={form.period} onChange={(e) => setForm({ ...form, period: e.target.value })} className="w-full p-2.5 bg-white border border-slate-300 rounded-lg focus:outline-none focus:border-brand-500">
+                                        <option value="نهار">نهار</option><option value="ليل">ليل</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                        <div className="mt-6 flex gap-3">
+                            <button onClick={handleSave} className="bg-brand-600 text-white px-6 py-2.5 rounded-lg font-bold hover:bg-brand-700 transition flex items-center gap-2">
+                                <i data-lucide={editingId ? 'check' : 'plus'} className="w-4 h-4"></i> {editingId ? "حفظ التعديل" : "حفظ السجل"}
+                            </button>
+                            {editingId && <button onClick={resetForm} className="bg-slate-200 text-slate-700 px-6 py-2.5 rounded-lg font-bold hover:bg-slate-300 transition">إلغاء</button>}
+                        </div>
+                    </div>
+
+                    <h3 className="font-bold text-slate-800 mb-4">كافة السجلات ({records.length})</h3>
+                    <div className="space-y-3 max-h-[500px] overflow-y-auto pr-2">
+                        {records.map(r => (
+                            <div key={r.id} className="flex justify-between items-center bg-white border border-slate-200 p-4 rounded-xl hover:border-brand-300">
+                                <div>
+                                    <h4 className="font-bold text-slate-800">{r.name} <span className="text-sm font-normal text-slate-500 ml-2">({r.raddahName})</span></h4>
+                                    <p className="text-sm text-slate-500">{r.day} {r.date} | {r.time} ({r.period})</p>
+                                </div>
+                                <div className="flex gap-2">
+                                    <button onClick={() => {setForm(r); setEditingId(r.id); window.scrollTo(0,0);}} className="p-2 bg-slate-50 text-slate-600 hover:text-brand-600 rounded-lg"><i data-lucide="edit-2" className="w-4 h-4"></i></button>
+                                    <button onClick={() => handleDelete(r.id)} className="p-2 bg-red-50 text-red-600 hover:text-red-800 rounded-lg"><i data-lucide="trash-2" className="w-4 h-4"></i></button>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            );
+
+            return (
+                <div className="min-h-screen pb-12">
+                    {/* Navigation */}
+                    <nav className="bg-white shadow-sm border-b border-slate-200 sticky top-0 z-50 mb-8">
+                        <div className="max-w-6xl mx-auto px-4 md:px-8 py-4 flex flex-col md:flex-row justify-between items-center gap-4">
+                            <div className="flex items-center gap-2 text-brand-600 font-black text-2xl">
+                                <i data-lucide="droplets"></i> الفلج
+                            </div>
+                            <div className="flex bg-slate-100 p-1 rounded-xl">
+                                <button onClick={() => setView('public')} className={`px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 transition-colors ${view === 'public' ? 'bg-white text-brand-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
+                                    <i data-lucide="layout-dashboard" className="w-4 h-4"></i> الواجهة الرئيسية
+                                </button>
+                                <button onClick={() => setView('my-schedule')} className={`px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 transition-colors ${view === 'my-schedule' ? 'bg-white text-brand-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
+                                    <i data-lucide="calendar-clock" className="w-4 h-4"></i> جدولي الشخصي
+                                </button>
+                                <button onClick={() => setView('admin')} className={`px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 transition-colors ${view === 'admin' ? 'bg-white text-red-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
+                                    <i data-lucide="shield-check" className="w-4 h-4"></i> الإدارة
+                                </button>
+                            </div>
+                        </div>
+                    </nav>
+
+                    {/* Dynamic View */}
+                    <div className="px-4">
+                        {view === 'public' && renderPublicDashboard()}
+                        {view === 'my-schedule' && renderMySchedule()}
+                        {view === 'admin' && (!isAdminAuth ? renderAdminAuth() : renderAdminDashboard())}
+                    </div>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
